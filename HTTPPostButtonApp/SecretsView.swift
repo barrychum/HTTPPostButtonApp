@@ -37,9 +37,12 @@ struct SecretsView: View {
                             SecretRow(secret: secret, onTap: {
                                 editingSecret = secret
                             })
-                        }
-                        .onDelete { offsets in
-                            secretsManager.deleteSecret(at: offsets)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button(action: { editingSecret = secret }) {
+                                    Label("Edit", systemImage: "pencil")
+                                }
+                                .tint(.gray)
+                            }
                         }
                     }
                     .listStyle(.insetGrouped)
@@ -279,10 +282,11 @@ struct EditSecretView: View {
             .alert("Delete Secret", isPresented: $showingDeleteAlert) {
                 Button("Delete", role: .destructive) {
                     onDelete()
+                    dismiss()
                 }
                 Button("Cancel", role: .cancel) { }
             } message: {
-                Text("Are you sure you want to delete \"\(editableSecret.key.isEmpty ? "this secret" : editableSecret.key)\"?")
+                Text("Are you sure you want to delete the secret \"\(editableSecret.key.isEmpty ? "this secret" : editableSecret.key)\"? This cannot be undone.")
             }
         }
     }
