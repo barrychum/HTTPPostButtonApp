@@ -2,8 +2,9 @@ import SwiftUI
 
 //
 // EditRequestView.swift
-// Version 0.7 - Edit screen for configuring POST request details
+// Version 0.8 - Edit screen for configuring POST request details
 // Includes colour picker (12 swatches), security options, OTP settings, headers and body
+// v0.8: Added Duplicate Button feature
 //
 
 struct EditRequestView: View {
@@ -12,20 +13,32 @@ struct EditRequestView: View {
     let requestStore: RequestStore
     let pageStore: PageStore
     let currentPageId: UUID
-    let isNew: Bool
+    @State private var isNew: Bool
     let onDelete: () -> Void
     
     @State private var showingDeleteButtonAlert = false
     @State private var showingDeleteHeaderAlert = false
     @State private var headerToDelete: PostRequestConfig.HTTPHeader? = nil
+    @State private var showingDuplicateAlert = false
     
     init(request: PostRequestConfig, requestStore: RequestStore, pageStore: PageStore, currentPageId: UUID, isNew: Bool = false, onDelete: @escaping () -> Void) {
         _editableRequest = State(initialValue: request)
         self.requestStore = requestStore
         self.pageStore = pageStore
         self.currentPageId = currentPageId
-        self.isNew = isNew
+        _isNew = State(initialValue: isNew)
         self.onDelete = onDelete
+    }
+    
+    // MARK: - Duplicate
+    private func duplicateAndRename() {
+        // Clone the config with a new UUID, same page, and blank title
+        var duplicate = editableRequest
+        duplicate.id = UUID()
+        duplicate.buttonTitle = ""
+        duplicate.pageId = editableRequest.pageId ?? currentPageId
+        editableRequest = duplicate
+        isNew = true
     }
     
     var body: some View {
@@ -203,20 +216,33 @@ struct EditRequestView: View {
                     .padding(.top, 4)
             }
             
-            // MARK: - Delete Button
+            // MARK: - Duplicate / Delete Buttons
             Section {
+                Button(action: {
+                    showingDuplicateAlert = true
+                }) {
+                    HStack {
+                        Spacer()
+                        Label("Duplicate Button", systemImage: "doc.on.doc")
+                        Spacer()
+                    }
+                }
+                .foregroundColor(.blue)
+                .disabled(isNew)
+
                 Button(role: .destructive, action: {
                     showingDeleteButtonAlert = true
                 }) {
                     HStack {
                         Spacer()
-                        Text("Delete Button")
+                        Label("Delete Button", systemImage: "trash")
                         Spacer()
                     }
                 }
+                .disabled(isNew)
             }
         }
-        .navigationTitle("Edit Request")
+        .navigationTitle(isNew ? "New Button" : "Edit Request")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) {
@@ -255,6 +281,14 @@ struct EditRequestView: View {
             Button("Cancel", role: .cancel) { headerToDelete = nil }
         } message: {
             Text("Are you sure you want to delete the header \"\(headerToDelete?.key.isEmpty == false ? headerToDelete!.key : "unnamed")\"?")
+        }
+        .alert("Duplicate Button", isPresented: $showingDuplicateAlert) {
+            Button("Duplicate") {
+                duplicateAndRename()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This will create a copy of \"\(editableRequest.buttonTitle)\". You'll need to enter a new name before saving.")
         }
     }
 }
