@@ -110,14 +110,14 @@ let buttonColorSwatches: [(name: String, hex: String)] = [
     ("Blue",        "007AFF"),
     ("Indigo",      "5856D6"),
     ("Purple",      "AF52DE"),
-    ("Pink",        "8E8E93"),
     ("Red",         "FF3B30"),
     ("Orange",      "FF9500"),
     ("Yellow",      "FFCC00"),
     ("Green",       "34C759"),
-    ("Teal",        "30B0C7"),
     ("Mint",        "00C7BE"),
-    ("Brown",       "A2845E"),
+    ("Teal",        "C7B192"),
+    ("Brown",       "A2724C"),
+    ("DGrey",       "8E8E93"),
     ("Graphite",    "636366")
 ]
 
