@@ -1,5 +1,6 @@
 import SwiftUI
 import UserNotifications
+import UniformTypeIdentifiers
 
 //
 // ContentView.swift
@@ -84,6 +85,10 @@ struct PageContentView: View {
     @State private var showingAbout = false
     @State private var showingSecrets = false
     @State private var showingManagePages = false
+    @State private var backupFileURL: IdentifiableURL? = nil
+    @State private var showingRestorePicker = false
+    @State private var showingRestoreConfirm = false
+    @State private var pendingRestoreURL: URL? = nil
     
     @State private var showingConfirmation = false
     @State private var pendingRequest: PostRequestConfig? = nil
@@ -193,6 +198,16 @@ struct PageContentView: View {
 
                         Divider()
 
+                        Button(action: { authenticateThenBackup() }) {
+                            Label("Backup Config", systemImage: "square.and.arrow.up")
+                        }
+                        
+                        Button(action: { authenticateThenRestore() }) {
+                            Label("Restore Config", systemImage: "square.and.arrow.down")
+                        }
+
+                        Divider()
+
                         Button(action: { showingAbout = true }) {
                             Label("About", systemImage: "info.circle")
                         }
@@ -228,6 +243,42 @@ struct PageContentView: View {
         }
         .sheet(isPresented: $showingManagePages) {
             ManagePagesView(pageStore: pageStore, requestStore: requestStore, selectedPageId: $selectedPageId)
+        }
+        .sheet(item: $backupFileURL, onDismiss: {
+            // Clean up temp file after sharing
+            if let url = backupFileURL?.url {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }) { identifiableURL in
+            ShareSheet(activityItems: [identifiableURL.url])
+        }
+        .fileImporter(
+            isPresented: $showingRestorePicker,
+            allowedContentTypes: [.json],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    pendingRestoreURL = url
+                    showingRestoreConfirm = true
+                }
+            case .failure(let error):
+                showResponseToast(message: "Could not open file:\n\(error.localizedDescription)", isError: true, timeout: 0)
+            }
+        }
+        .alert("Restore Configuration?", isPresented: $showingRestoreConfirm) {
+            Button("Restore", role: .destructive) {
+                if let url = pendingRestoreURL {
+                    performRestore(from: url)
+                    pendingRestoreURL = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                pendingRestoreURL = nil
+            }
+        } message: {
+            Text("This will overwrite ALL existing pages and buttons. Secrets will not be affected. This cannot be undone.")
         }
         .alert(pendingRequest?.buttonTitle ?? "Confirm", isPresented: $showingConfirmation) {
             Button("Send", role: .destructive) {
@@ -349,6 +400,125 @@ struct PageContentView: View {
                 self.showResponseToast(message: "Authentication Failed:\n\(error.localizedDescription)", isError: true, timeout: 0)
             }
         }
+    }
+    
+    private func authenticateThenBackup() {
+        BiometricAuth.authenticate(reason: "Authenticate to backup your configuration") { result in
+            switch result {
+            case .success:
+                self.performBackup()
+            case .failure(let error):
+                self.showResponseToast(message: "Authentication Failed:\n\(error.localizedDescription)", isError: true, timeout: 0)
+            }
+        }
+    }
+    
+    private func authenticateThenRestore() {
+        BiometricAuth.authenticate(reason: "Authenticate to restore your configuration") { result in
+            switch result {
+            case .success:
+                self.showingRestorePicker = true
+            case .failure(let error):
+                self.showResponseToast(message: "Authentication Failed:\n\(error.localizedDescription)", isError: true, timeout: 0)
+            }
+        }
+    }
+    
+    private func performBackup() {
+        struct BackupPayload: Codable {
+            let version: Int
+            let exportedAt: String
+            let pages: [PageConfig]
+            let buttons: [PostRequestConfig]
+        }
+        
+        // Scrub OTP secrets: keep {{PLACEHOLDER}} references, blank out raw secrets
+        let safeButtons = requestStore.requests.map { button -> PostRequestConfig in
+            var b = button
+            if b.otpEnabled {
+                let isPlaceholder = b.otpSecret.hasPrefix("{{") && b.otpSecret.hasSuffix("}}")
+                if !isPlaceholder {
+                    b.otpSecret = ""   // Raw secret — strip it from backup
+                }
+                // Placeholder references like {{MY_OTP_KEY}} are kept as-is
+            }
+            return b
+        }
+        
+        let formatter = ISO8601DateFormatter()
+        let payload = BackupPayload(
+            version: 1,
+            exportedAt: formatter.string(from: Date()),
+            pages: pageStore.pages,
+            buttons: safeButtons
+        )
+        
+        guard let data = try? JSONEncoder().encode(payload) else {
+            showResponseToast(message: "Backup failed: could not encode configuration.", isError: true, timeout: 0)
+            return
+        }
+        
+        // Write to a temp file with a dated name
+        let dateStr = DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .short)
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: " ", with: "_")
+        let fileName = "QikPOST_Backup_\(dateStr).json"
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+        
+        do {
+            try data.write(to: tempURL)
+            backupFileURL = IdentifiableURL(url: tempURL)
+        } catch {
+            showResponseToast(message: "Backup failed: \(error.localizedDescription)", isError: true, timeout: 0)
+        }
+    }
+    
+    private func performRestore(from url: URL) {
+        struct BackupPayload: Codable {
+            let version: Int
+            let exportedAt: String?
+            let pages: [PageConfig]
+            let buttons: [PostRequestConfig]
+        }
+        
+        // Security-scoped resource access needed for files picked via Files app
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        
+        guard let data = try? Data(contentsOf: url) else {
+            showResponseToast(message: "Restore failed: could not read file.", isError: true, timeout: 0)
+            return
+        }
+        
+        guard let payload = try? JSONDecoder().decode(BackupPayload.self, from: data) else {
+            showResponseToast(message: "Restore failed: invalid or corrupted backup file.", isError: true, timeout: 0)
+            return
+        }
+        
+        guard !payload.pages.isEmpty else {
+            showResponseToast(message: "Restore failed: backup contains no pages.", isError: true, timeout: 0)
+            return
+        }
+        
+        // Overwrite pages
+        pageStore.pages = payload.pages.sorted(by: { $0.order < $1.order })
+        pageStore.savePages()
+        
+        // Overwrite buttons (secrets untouched — they live in Keychain separately)
+        requestStore.requests = payload.buttons
+        requestStore.saveRequests()
+        
+        // Navigate to the first page of the restored config
+        selectedPageId = pageStore.pages.first?.id
+        
+        let buttonCount = payload.buttons.count
+        let pageCount = payload.pages.count
+        showResponseToast(
+            message: "Restore complete.\n\(pageCount) page\(pageCount == 1 ? "" : "s") and \(buttonCount) button\(buttonCount == 1 ? "" : "s") restored.",
+            isError: false,
+            timeout: 5
+        )
     }
     
     // MARK: - Request Handling
@@ -603,4 +773,23 @@ struct ResponsePopupView: View {
         }
         .background(Color(.systemBackground))
     }
+}
+
+// MARK: - IdentifiableURL (for sheet(item:) presentation)
+
+struct IdentifiableURL: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+// MARK: - Share Sheet (UIActivityViewController wrapper)
+
+struct ShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
+    
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+    
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
