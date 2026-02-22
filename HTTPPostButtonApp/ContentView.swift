@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 //
 // ContentView.swift
@@ -86,6 +87,7 @@ struct PageContentView: View {
     
     @State private var showingConfirmation = false
     @State private var pendingRequest: PostRequestConfig? = nil
+    @State private var responseTimer: DispatchWorkItem? = nil
     
     var buttonsOnThisPage: [PostRequestConfig] {
         requestStore.requests.filter { $0.pageId == page.id }
@@ -227,11 +229,6 @@ struct PageContentView: View {
         .sheet(isPresented: $showingManagePages) {
             ManagePagesView(pageStore: pageStore, requestStore: requestStore, selectedPageId: $selectedPageId)
         }
-        .alert("Response", isPresented: $showingResponse) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text(responseMessage)
-        }
         .alert(pendingRequest?.buttonTitle ?? "Confirm", isPresented: $showingConfirmation) {
             Button("Send", role: .destructive) {
                 if let request = pendingRequest { proceedWithRequest(request) }
@@ -239,6 +236,49 @@ struct PageContentView: View {
             Button("Cancel", role: .cancel) { pendingRequest = nil }
         } message: {
             Text(pendingRequest?.confirmationMessage ?? "Confirm to send ?")
+        }
+        .sheet(isPresented: $showingResponse) {
+            ResponsePopupView(
+                message: responseMessage,
+                isError: isError,
+                onDismiss: { dismissResponse() }
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+        }
+    }
+    
+    // MARK: - Response Dismissal
+    
+    private func dismissResponse() {
+        responseTimer?.cancel()
+        responseTimer = nil
+        showingResponse = false
+    }
+    
+    private func sendSentNotification(for request: PostRequestConfig) {
+        let content = UNMutableNotificationContent()
+        content.title = request.buttonTitle
+        content.body = "Command sent"
+        content.sound = .default
+        content.categoryIdentifier = "COMMAND_SENT"
+        content.interruptionLevel = .active
+        
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
+        let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(req)
+    }
+    
+    private func showResponseToast(message: String, isError: Bool, timeout: Int) {
+        responseMessage = message
+        self.isError = isError
+        showingResponse = true
+        
+        responseTimer?.cancel()
+        if timeout > 0 {
+            let item = DispatchWorkItem { dismissResponse() }
+            responseTimer = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(timeout), execute: item)
         }
     }
     
@@ -271,9 +311,7 @@ struct PageContentView: View {
             case .success:
                 self.editingRequest = request
             case .failure(let error):
-                self.responseMessage = "Authentication Failed:\n\(error.localizedDescription)"
-                self.isError = true
-                self.showingResponse = true
+                self.showResponseToast(message: "Authentication Failed:\n\(error.localizedDescription)", isError: true, timeout: 0)
             }
         }
     }
@@ -286,9 +324,7 @@ struct PageContentView: View {
                 newButton.pageId = page.id
                 self.editingRequest = newButton
             case .failure(let error):
-                self.responseMessage = "Authentication Failed:\n\(error.localizedDescription)"
-                self.isError = true
-                self.showingResponse = true
+                self.showResponseToast(message: "Authentication Failed:\n\(error.localizedDescription)", isError: true, timeout: 0)
             }
         }
     }
@@ -299,9 +335,7 @@ struct PageContentView: View {
             case .success:
                 self.showingSecrets = true
             case .failure(let error):
-                self.responseMessage = "Authentication Failed:\n\(error.localizedDescription)"
-                self.isError = true
-                self.showingResponse = true
+                self.showResponseToast(message: "Authentication Failed:\n\(error.localizedDescription)", isError: true, timeout: 0)
             }
         }
     }
@@ -312,9 +346,7 @@ struct PageContentView: View {
             case .success:
                 self.showingManagePages = true
             case .failure(let error):
-                self.responseMessage = "Authentication Failed:\n\(error.localizedDescription)"
-                self.isError = true
-                self.showingResponse = true
+                self.showResponseToast(message: "Authentication Failed:\n\(error.localizedDescription)", isError: true, timeout: 0)
             }
         }
     }
@@ -337,9 +369,7 @@ struct PageContentView: View {
                 case .success:
                     self.performRequest(request)
                 case .failure(let error):
-                    self.responseMessage = "Authentication Failed:\n\(error.localizedDescription)"
-                    self.isError = true
-                    self.showingResponse = true
+                    self.showResponseToast(message: "Authentication Failed:\n\(error.localizedDescription)", isError: true, timeout: 0)
                 }
             }
         } else {
@@ -357,9 +387,11 @@ struct PageContentView: View {
                 sendMainRequest(request, otp: otp)
             } else {
                 isLoading = false
-                responseMessage = "OTP Generation Failed:\nInvalid secret key. Please check your secret format."
-                isError = true
-                showingResponse = true
+                if request.showResponse {
+                    showResponseToast(message: "OTP Generation Failed:\nInvalid secret key. Please check your secret format.", isError: true, timeout: 0)
+                } else {
+                    sendSentNotification(for: request)
+                }
             }
         } else {
             sendMainRequest(request, otp: nil)
@@ -369,15 +401,15 @@ struct PageContentView: View {
     private func sendMainRequest(_ request: PostRequestConfig, otp: String?) {
         HTTPService.sendPostRequest(config: request, otp: otp) { result in
             self.isLoading = false
-            switch result {
-            case .success(let response):
-                self.responseMessage = response
-                self.isError = false
-                self.showingResponse = true
-            case .failure(let error):
-                self.responseMessage = error.localizedDescription
-                self.isError = true
-                self.showingResponse = true
+            if request.showResponse {
+                switch result {
+                case .success(let response):
+                    self.showResponseToast(message: response, isError: false, timeout: request.responseTimeout)
+                case .failure(let error):
+                    self.showResponseToast(message: error.localizedDescription, isError: true, timeout: request.responseTimeout)
+                }
+            } else {
+                self.sendSentNotification(for: request)
             }
         }
     }
@@ -521,5 +553,54 @@ struct RequestButton: View {
             }
             .tint(.gray)
         }
+    }
+}
+
+// MARK: - Response Popup View
+
+/// A sheet presented in the centre of the screen (using .presentationDetents)
+/// that mimics the system alert style with a large, easy-to-tap Dismiss button.
+struct ResponsePopupView: View {
+    let message: String
+    let isError: Bool
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            VStack(spacing: 12) {
+                Image(systemName: isError ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                    .font(.system(size: 44))
+                    .foregroundColor(isError ? .red : .green)
+                    .padding(.top, 28)
+
+                Text(isError ? "Error" : "Response")
+                    .font(.title2)
+                    .fontWeight(.bold)
+            }
+            .padding(.bottom, 16)
+
+            Divider()
+
+            // Scrollable response body
+            ScrollView {
+                Text(message)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+            }
+
+            Divider()
+
+            // Large, easy-to-tap dismiss button
+            Button(action: onDismiss) {
+                Text("Dismiss")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+            }
+            .foregroundColor(.blue)
+        }
+        .background(Color(.systemBackground))
     }
 }

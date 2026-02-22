@@ -29,6 +29,11 @@ struct PostRequestConfig: Identifiable, Codable {
     var requireConfirmation: Bool = false
     var confirmationMessage: String = "Confirm to send ?"
     
+    // MARK: - Response Display
+    var showResponse: Bool = true
+    /// Auto-dismiss timeout in seconds. 0 means the alert stays until dismissed manually.
+    var responseTimeout: Int = 0
+    
     // MARK: - Button Color
     // Stored as hex string so it's Codable (e.g. "007AFF" for blue)
     var buttonColorHex: String = "007AFF"
@@ -55,6 +60,8 @@ struct PostRequestConfig: Identifiable, Codable {
         requireBiometric: Bool = false,
         requireConfirmation: Bool = false,
         confirmationMessage: String = "Confirm to send ?",
+        showResponse: Bool = true,
+        responseTimeout: Int = 0,
         buttonColorHex: String = "007AFF"
     ) {
         self.buttonTitle = buttonTitle
@@ -67,6 +74,8 @@ struct PostRequestConfig: Identifiable, Codable {
         self.requireBiometric = requireBiometric
         self.requireConfirmation = requireConfirmation
         self.confirmationMessage = confirmationMessage
+        self.showResponse = showResponse
+        self.responseTimeout = responseTimeout
         self.buttonColorHex = buttonColorHex
     }
 }

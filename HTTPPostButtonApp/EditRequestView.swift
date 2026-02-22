@@ -2,9 +2,8 @@ import SwiftUI
 
 //
 // EditRequestView.swift
-// Version 0.8 - Edit screen for configuring POST request details
-// Includes colour picker (12 swatches), security options, OTP settings, headers and body
-// v0.8: Added Duplicate Button feature
+// Version 0.9 - Edit screen for configuring POST request details
+// v0.9: ⓘ info buttons placed inline after label text
 //
 
 struct EditRequestView: View {
@@ -32,7 +31,6 @@ struct EditRequestView: View {
     
     // MARK: - Duplicate
     private func duplicateAndRename() {
-        // Clone the config with a new UUID, same page, and blank title
         var duplicate = editableRequest
         duplicate.id = UUID()
         duplicate.buttonTitle = ""
@@ -47,7 +45,6 @@ struct EditRequestView: View {
             Section(header: Text("Button Configuration")) {
                 TextField("Button Title", text: $editableRequest.buttonTitle)
                 
-                // MARK: - Page Selection
                 Picker("Page", selection: Binding(
                     get: { editableRequest.pageId ?? currentPageId },
                     set: { editableRequest.pageId = $0 }
@@ -62,13 +59,10 @@ struct EditRequestView: View {
                     }
                 }
                 
-                // MARK: - Color Picker
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Button Color")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
-                    
-                    // 6 columns × 2 rows grid of swatches
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 10) {
                         ForEach(buttonColorSwatches, id: \.hex) { swatch in
                             ColorSwatch(
@@ -86,21 +80,32 @@ struct EditRequestView: View {
             
             // MARK: - Security
             Section(header: Text("Security")) {
-                Toggle(BiometricAuth.isAvailable() ? "Require \(BiometricAuth.biometricType())" : "Require Authentication", isOn: $editableRequest.requireBiometric)
-                
-                if editableRequest.requireBiometric {
-                    if BiometricAuth.isAvailable() {
-                        Text("You will be prompted for \(BiometricAuth.biometricType()) before sending this request.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    } else {
-                        Text("⚠️ Biometric authentication is not available. Passcode will be required instead.")
-                            .font(.caption)
-                            .foregroundColor(.orange)
+                // Toggle with inline ⓘ: label built manually, toggle uses empty label
+                Toggle(isOn: $editableRequest.requireBiometric) {
+                    HStack(spacing: 4) {
+                        Text(BiometricAuth.isAvailable()
+                             ? "Require \(BiometricAuth.biometricType())"
+                             : "Require Authentication")
+                        InfoButton(
+                            title: BiometricAuth.isAvailable()
+                                ? "Require \(BiometricAuth.biometricType())"
+                                : "Require Authentication",
+                            message: BiometricAuth.isAvailable()
+                                ? "You will be prompted for \(BiometricAuth.biometricType()) before this request is sent."
+                                : "⚠️ Biometric authentication is not available on this device. Your passcode will be required instead."
+                        )
                     }
                 }
                 
-                Toggle("Require Confirmation", isOn: $editableRequest.requireConfirmation)
+                Toggle(isOn: $editableRequest.requireConfirmation) {
+                    HStack(spacing: 4) {
+                        Text("Require Confirmation")
+                        InfoButton(
+                            title: "Require Confirmation",
+                            message: "A confirmation alert will be shown before the request is sent, giving you a chance to cancel."
+                        )
+                    }
+                }
                 
                 if editableRequest.requireConfirmation {
                     VStack(alignment: .leading, spacing: 8) {
@@ -109,16 +114,59 @@ struct EditRequestView: View {
                             .foregroundColor(.secondary)
                         TextField("Enter confirmation message", text: $editableRequest.confirmationMessage)
                     }
-                    Text("A confirmation alert will be shown before sending the request.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.top, 4)
+                }
+            }
+            
+            // MARK: - Response
+            Section(header: Text("Response")) {
+                Toggle(isOn: $editableRequest.showResponse) {
+                    HStack(spacing: 4) {
+                        Text("Show Response")
+                        InfoButton(
+                            title: "Show Response",
+                            message: "When enabled, the full HTTP response is shown in a popup after sending. When disabled, a brief \"Command sent\" notification appears instead."
+                        )
+                    }
+                }
+                
+                if editableRequest.showResponse {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 4) {
+                            Text("Auto-dismiss")
+                            InfoButton(
+                                title: "Auto-dismiss",
+                                message: "Set how many seconds before the response popup closes automatically. Set to 0 to keep it open until you tap Dismiss."
+                            )
+                            Spacer()
+                            Text(editableRequest.responseTimeout == 0
+                                 ? "Off"
+                                 : "\(editableRequest.responseTimeout)s")
+                                .foregroundColor(.secondary)
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { Double(editableRequest.responseTimeout) },
+                                set: { editableRequest.responseTimeout = Int($0.rounded()) }
+                            ),
+                            in: 0...30,
+                            step: 1
+                        )
+                    }
+                    .padding(.vertical, 4)
                 }
             }
             
             // MARK: - OTP Settings
             Section(header: Text("OTP Settings (Optional)")) {
-                Toggle("Enable Local OTP Generation", isOn: $editableRequest.otpEnabled)
+                Toggle(isOn: $editableRequest.otpEnabled) {
+                    HStack(spacing: 4) {
+                        Text("Enable Local OTP Generation")
+                        InfoButton(
+                            title: "OTP Generation",
+                            message: "Generates a 6-digit TOTP code locally on your device (RFC 6238). Use {{OTP}} as a placeholder in your request body — it will be replaced with the live code at send time.\n\nSecret formats accepted: Base32 (A–Z, 2–7), hex, or plain text."
+                        )
+                    }
+                }
                 
                 if editableRequest.otpEnabled {
                     VStack(alignment: .leading, spacing: 8) {
@@ -130,14 +178,6 @@ struct EditRequestView: View {
                             .autocorrectionDisabled()
                             .font(.system(.body, design: .monospaced))
                     }
-                    Text("The app will generate a 6-digit TOTP code locally. Use {{OTP}} in your request body where you want the OTP inserted.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.top, 4)
-                    Text("💡 Secret format: Base32 (A-Z, 2-7), hex, or plain text")
-                        .font(.caption)
-                        .foregroundColor(.blue)
-                        .padding(.top, 2)
                 }
             }
             
@@ -191,10 +231,15 @@ struct EditRequestView: View {
                     }
                 }
                 
-                Text("💡 You can use {{KEY_NAME}} in header values too")
-                    .font(.caption)
-                    .foregroundColor(.green)
-                    .padding(.top, 4)
+                HStack(spacing: 4) {
+                    Text("Secrets can be used in header values")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    InfoButton(
+                        title: "Secrets in Headers",
+                        message: "Use {{KEY_NAME}} in any header value to insert a stored secret at send time. Manage your secrets from the main menu."
+                    )
+                }
             }
             
             // MARK: - Request Body
@@ -204,23 +249,21 @@ struct EditRequestView: View {
                     .font(.system(.body, design: .monospaced))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                if editableRequest.otpEnabled {
-                    Text("💡 Use {{OTP}} as a placeholder. It will be replaced with the actual 6-digit OTP.")
+                
+                HStack(spacing: 4) {
+                    Text("Placeholders available")
                         .font(.caption)
-                        .foregroundColor(.blue)
-                        .padding(.top, 4)
+                        .foregroundColor(.secondary)
+                    InfoButton(
+                        title: "Body Placeholders",
+                        message: "Use {{KEY_NAME}} to insert a stored secret.\(editableRequest.otpEnabled ? "\n\nUse {{OTP}} to insert the generated 6-digit OTP code." : "")\n\nManage secrets from the main menu."
+                    )
                 }
-                Text("💡 Use {{KEY_NAME}} to insert secrets. Manage secrets from the menu.")
-                    .font(.caption)
-                    .foregroundColor(.green)
-                    .padding(.top, 4)
             }
             
             // MARK: - Duplicate / Delete Buttons
             Section {
-                Button(action: {
-                    showingDuplicateAlert = true
-                }) {
+                Button(action: { showingDuplicateAlert = true }) {
                     HStack {
                         Spacer()
                         Label("Duplicate Button", systemImage: "doc.on.doc")
@@ -230,9 +273,7 @@ struct EditRequestView: View {
                 .foregroundColor(.blue)
                 .disabled(isNew)
 
-                Button(role: .destructive, action: {
-                    showingDeleteButtonAlert = true
-                }) {
+                Button(role: .destructive, action: { showingDeleteButtonAlert = true }) {
                     HStack {
                         Spacer()
                         Label("Delete Button", systemImage: "trash")
@@ -261,10 +302,7 @@ struct EditRequestView: View {
             }
         }
         .alert("Delete Button", isPresented: $showingDeleteButtonAlert) {
-            Button("Delete", role: .destructive) {
-                onDelete()
-                dismiss()
-            }
+            Button("Delete", role: .destructive) { onDelete(); dismiss() }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Are you sure you want to delete \"\(editableRequest.buttonTitle)\"?")
@@ -272,9 +310,7 @@ struct EditRequestView: View {
         .alert("Delete Header", isPresented: $showingDeleteHeaderAlert) {
             Button("Delete", role: .destructive) {
                 if let header = headerToDelete {
-                    withAnimation {
-                        editableRequest.headers.removeAll(where: { $0.id == header.id })
-                    }
+                    withAnimation { editableRequest.headers.removeAll(where: { $0.id == header.id }) }
                     headerToDelete = nil
                 }
             }
@@ -283,12 +319,55 @@ struct EditRequestView: View {
             Text("Are you sure you want to delete the header \"\(headerToDelete?.key.isEmpty == false ? headerToDelete!.key : "unnamed")\"?")
         }
         .alert("Duplicate Button", isPresented: $showingDuplicateAlert) {
-            Button("Duplicate") {
-                duplicateAndRename()
-            }
+            Button("Duplicate") { duplicateAndRename() }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This will create a copy of \"\(editableRequest.buttonTitle)\". You'll need to enter a new name before saving.")
+        }
+    }
+}
+
+// MARK: - Info Button
+
+/// A small ⓘ placed inline after label text, opens a half-screen explanation sheet.
+struct InfoButton: View {
+    let title: String
+    let message: String
+    @State private var isPresented = false
+    
+    var body: some View {
+        Button(action: { isPresented = true }) {
+            Image(systemName: "info.circle")
+                .foregroundColor(.secondary)
+                .imageScale(.medium)
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $isPresented) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Image(systemName: "info.circle.fill")
+                        .foregroundColor(.blue)
+                        .font(.title2)
+                    Text(title)
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                    Spacer()
+                    Button(action: { isPresented = false }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                            .font(.title2)
+                    }
+                }
+                Divider()
+                Text(message)
+                    .font(.body)
+                    .foregroundColor(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+            }
+            .padding(24)
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
         }
     }
 }
@@ -308,7 +387,6 @@ struct ColorSwatch: View {
                     .fill(Color(hex: hex) ?? .blue)
                     .frame(width: 40, height: 40)
                     .shadow(color: .black.opacity(0.15), radius: 2, x: 0, y: 1)
-                
                 if isSelected {
                     Circle()
                         .strokeBorder(.white, lineWidth: 2.5)
