@@ -4,8 +4,8 @@ import UniformTypeIdentifiers
 
 //
 // ContentView.swift
-// Version 0.8 - Main view with page picker in navigation title
-// Cleaner design with more screen space for buttons
+// Version 0.9 - Main view with page picker in navigation title + spacer support
+// Cleaner design with more screen space for buttons, with spacers in reorder mode
 //
 
 struct ContentView: View {
@@ -76,6 +76,7 @@ struct PageContentView: View {
     @Binding var selectedPageId: UUID?
     
     @State private var editingRequest: PostRequestConfig?
+    @State private var editingSpacer: ButtonItem?
     @State private var showingResponse = false
     @State private var responseMessage = ""
     @State private var isError = false
@@ -98,9 +99,13 @@ struct PageContentView: View {
         requestStore.requests.filter { $0.pageId == page.id }
     }
     
+    var itemsOnThisPage: [ButtonItem] {
+        requestStore.buttonItems.filter { $0.pageId == page.id }
+    }
+    
     var body: some View {
         Group {
-            if buttonsOnThisPage.isEmpty {
+            if buttonsOnThisPage.isEmpty && !isReordering {
                 VStack(spacing: 20) {
                     Image(systemName: "network.slash")
                         .font(.system(size: 60))
@@ -115,39 +120,63 @@ struct PageContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if isReordering {
                 List {
-                    ForEach(buttonsOnThisPage) { request in
-                        HStack(spacing: 12) {
-                            Circle()
-                                .fill(request.buttonColor)
-                                .frame(width: 12, height: 12)
-                            Text(request.buttonTitle)
-                                .fontWeight(.medium)
-                                .foregroundColor(.primary)
-                            Spacer()
+                    ForEach(itemsOnThisPage) { item in
+                        if item.isSpacer {
+                            SpacerRow(height: item.spacerHeight)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    editingSpacer = item
+                                }
+                        } else if let buttonConfig = item.buttonConfig {
+                            ButtonRow(request: buttonConfig)
                         }
-                        .padding(.vertical, 6)
                     }
                     .onMove { source, destination in
-                        moveButtonsOnPage(from: source, to: destination)
+                        moveItemsOnPage(from: source, to: destination)
+                    }
+                    .onDelete { indexSet in
+                        deleteItemsOnPage(at: indexSet)
+                    }
+                    
+                    // Add Spacer button
+                    Button(action: {
+                        requestStore.addSpacer(pageId: page.id)
+                    }) {
+                        HStack {
+                            Image(systemName: "plus.circle.fill")
+                                .foregroundColor(.blue)
+                            Text("Add Spacer")
+                                .foregroundColor(.blue)
+                        }
                     }
                 }
                 .listStyle(.insetGrouped)
                 .environment(\.editMode, .constant(.active))
             } else {
                 List {
-                    ForEach(buttonsOnThisPage) { request in
-                        RequestButton(
-                            request: request,
-                            isLoading: isLoading,
-                            onTap: { sendRequest(request) },
-                            onEdit: { authenticateThenEdit(request) }
-                        )
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
+                    ForEach(itemsOnThisPage) { item in
+                        if item.isSpacer {
+                            Rectangle()
+                                .fill(Color.clear)
+                                .frame(height: item.spacerHeight)
+                                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
+                        } else if let request = item.buttonConfig {
+                            RequestButton(
+                                request: request,
+                                isLoading: isLoading,
+                                onTap: { sendRequest(request) },
+                                onEdit: { authenticateThenEdit(request) }
+                            )
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                        }
                     }
                 }
                 .listStyle(.plain)
+                .environment(\.defaultMinListRowHeight, 0)
             }
         }
         .navigationTitle(isReordering ? "Reorder Buttons" : "")
@@ -184,7 +213,7 @@ struct PageContentView: View {
                         }) {
                             Label("Reorder Buttons", systemImage: "arrow.up.arrow.down")
                         }
-                        .disabled(buttonsOnThisPage.count < 2)
+                        .disabled(buttonsOnThisPage.count < 2 && itemsOnThisPage.filter { $0.isSpacer }.isEmpty)
 
                         Divider()
                         
@@ -227,13 +256,20 @@ struct PageContentView: View {
                     currentPageId: page.id,
                     isNew: !requestStore.requests.contains(where: { $0.id == request.id }),
                     onDelete: {
-                        if let index = requestStore.requests.firstIndex(where: { $0.id == request.id }) {
-                            requestStore.deleteRequest(at: IndexSet(integer: index))
+                        if let index = requestStore.buttonItems.firstIndex(where: { $0.id == request.id }) {
+                            requestStore.deleteItem(at: IndexSet(integer: index))
                         }
                         editingRequest = nil
                     }
                 )
             }
+        }
+        .sheet(item: $editingSpacer) { spacer in
+            EditSpacerView(
+                spacer: spacer,
+                requestStore: requestStore,
+                onDismiss: { editingSpacer = nil }
+            )
         }
         .sheet(isPresented: $showingAbout) {
             AboutView()
@@ -354,6 +390,37 @@ struct PageContentView: View {
         requestStore.saveRequests()
     }
     
+    private func moveItemsOnPage(from source: IndexSet, to destination: Int) {
+        var pageItems = itemsOnThisPage
+        pageItems.move(fromOffsets: source, toOffset: destination)
+        
+        // Update the order in the main button items store
+        var allItems = requestStore.buttonItems
+        
+        // Remove items on this page from the main list
+        allItems.removeAll(where: { $0.pageId == page.id })
+        
+        // Insert reordered page items back at the beginning
+        for item in pageItems.reversed() {
+            allItems.insert(item, at: 0)
+        }
+        
+        requestStore.buttonItems = allItems
+        requestStore.saveButtonItems()
+    }
+    
+    private func deleteItemsOnPage(at indexSet: IndexSet) {
+        let pageItems = itemsOnThisPage
+        for index in indexSet.sorted().reversed() {
+            if index < pageItems.count {
+                let itemToDelete = pageItems[index]
+                if let globalIndex = requestStore.buttonItems.firstIndex(where: { $0.id == itemToDelete.id }) {
+                    requestStore.deleteItem(at: IndexSet(integer: globalIndex))
+                }
+            }
+        }
+    }
+    
     // MARK: - Authentication
     
     private func authenticateThenEdit(_ request: PostRequestConfig) {
@@ -430,6 +497,7 @@ struct PageContentView: View {
             let exportedAt: String
             let pages: [PageConfig]
             let buttons: [PostRequestConfig]
+            let buttonItems: [ButtonItem]
         }
         
         // Scrub OTP secrets: keep {{PLACEHOLDER}} references, blank out raw secrets
@@ -445,12 +513,28 @@ struct PageContentView: View {
             return b
         }
         
+        // Also scrub button items
+        let safeButtonItems = requestStore.buttonItems.map { item -> ButtonItem in
+            var i = item
+            if var config = i.buttonConfig {
+                if config.otpEnabled {
+                    let isPlaceholder = config.otpSecret.hasPrefix("{{") && config.otpSecret.hasSuffix("}}")
+                    if !isPlaceholder {
+                        config.otpSecret = ""
+                    }
+                }
+                i.buttonConfig = config
+            }
+            return i
+        }
+        
         let formatter = ISO8601DateFormatter()
         let payload = BackupPayload(
-            version: 1,
+            version: 2,
             exportedAt: formatter.string(from: Date()),
             pages: pageStore.pages,
-            buttons: safeButtons
+            buttons: safeButtons,
+            buttonItems: safeButtonItems
         )
         
         guard let data = try? JSONEncoder().encode(payload) else {
@@ -480,6 +564,7 @@ struct PageContentView: View {
             let exportedAt: String?
             let pages: [PageConfig]
             let buttons: [PostRequestConfig]
+            let buttonItems: [ButtonItem]?
         }
         
         // Security-scoped resource access needed for files picked via Files app
@@ -505,9 +590,15 @@ struct PageContentView: View {
         pageStore.pages = payload.pages.sorted(by: { $0.order < $1.order })
         pageStore.savePages()
         
-        // Overwrite buttons (secrets untouched — they live in Keychain separately)
+        // Overwrite buttons and button items
         requestStore.requests = payload.buttons
-        requestStore.saveRequests()
+        if let items = payload.buttonItems {
+            requestStore.buttonItems = items
+        } else {
+            // Old backup format - convert buttons to items
+            requestStore.buttonItems = payload.buttons.map { ButtonItem.button($0) }
+        }
+        requestStore.saveButtonItems()
         
         // Navigate to the first page of the restored config
         selectedPageId = pageStore.pages.first?.id
@@ -582,6 +673,51 @@ struct PageContentView: View {
                 self.sendSentNotification(for: request)
             }
         }
+    }
+}
+
+// MARK: - Button Row (for reorder mode)
+
+struct ButtonRow: View {
+    let request: PostRequestConfig
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(request.buttonColor)
+                .frame(width: 12, height: 12)
+            Text(request.buttonTitle)
+                .fontWeight(.medium)
+                .foregroundColor(.primary)
+            Spacer()
+        }
+        .padding(.vertical, 6)
+    }
+}
+
+// MARK: - Spacer Row (for reorder mode)
+
+struct SpacerRow: View {
+    let height: CGFloat
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "arrow.up.arrow.down.circle.fill")
+                .foregroundColor(.gray)
+                .frame(width: 12, height: 12)
+            Text("Spacer")
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
+                .italic()
+            Spacer()
+            Text("\(Int(height))pt")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding(.vertical, 6)
     }
 }
 
@@ -780,6 +916,120 @@ struct ResponsePopupView: View {
 struct IdentifiableURL: Identifiable {
     let id = UUID()
     let url: URL
+}
+
+// MARK: - Edit Spacer View
+
+struct EditSpacerView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var editableHeight: Double
+    let spacer: ButtonItem
+    let requestStore: RequestStore
+    let onDismiss: () -> Void
+    
+    init(spacer: ButtonItem, requestStore: RequestStore, onDismiss: @escaping () -> Void) {
+        self.spacer = spacer
+        self.requestStore = requestStore
+        self.onDismiss = onDismiss
+        _editableHeight = State(initialValue: Double(spacer.spacerHeight))
+    }
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(header: Text("Spacer Height")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("Height")
+                            Spacer()
+                            Text("\(Int(editableHeight)) pt")
+                                .foregroundColor(.secondary)
+                                .fontWeight(.semibold)
+                        }
+                        
+                        Slider(
+                            value: $editableHeight,
+                            in: 5...80,
+                            step: 5
+                        )
+                        
+                        HStack {
+                            Text("5pt")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("80pt")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 8)
+                }
+                
+                Section(header: Text("Quick Presets")) {
+                    HStack(spacing: 12) {
+                        PresetButton(label: "Tiny", value: 5, currentValue: $editableHeight)
+                        PresetButton(label: "Small", value: 15, currentValue: $editableHeight)
+                        PresetButton(label: "Medium", value: 25, currentValue: $editableHeight)
+                        PresetButton(label: "Large", value: 40, currentValue: $editableHeight)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .navigationTitle("Edit Spacer")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") {
+                        onDismiss()
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Save") {
+                        var updatedSpacer = spacer
+                        updatedSpacer.spacerHeight = CGFloat(editableHeight)
+                        requestStore.updateItem(updatedSpacer)
+                        onDismiss()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Preset Button
+
+struct PresetButton: View {
+    let label: String
+    let value: Double
+    @Binding var currentValue: Double
+    
+    var isSelected: Bool {
+        abs(currentValue - value) < 0.1
+    }
+    
+    var body: some View {
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                currentValue = value
+            }
+        }) {
+            VStack(spacing: 4) {
+                Text(label)
+                    .font(.caption)
+                    .fontWeight(isSelected ? .semibold : .regular)
+                Text("\(Int(value))pt")
+                    .font(.caption2)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(isSelected ? Color.blue.opacity(0.15) : Color.gray.opacity(0.1))
+            .foregroundColor(isSelected ? .blue : .secondary)
+            .cornerRadius(8)
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 // MARK: - Share Sheet (UIActivityViewController wrapper)

@@ -4,9 +4,53 @@ import SwiftUI
 
 //
 // Models.swift
-// Version 0.7 - Data models for POST request configuration and persistent storage
-// Includes colour support, OTP config, biometric auth and confirmation prompt settings
+// Version 0.8 - Data models for POST request configuration and persistent storage
+// Includes colour support, OTP config, biometric auth, confirmation prompt settings, and spacers
 //
+
+// MARK: - Button Item Type (enum to differentiate buttons from spacers)
+
+enum ButtonItemType: String, Codable {
+    case button
+    case spacer
+}
+
+// MARK: - Button Item (wrapper that can be either a button or spacer)
+
+struct ButtonItem: Identifiable, Codable {
+    var id = UUID()
+    var type: ButtonItemType
+    var pageId: UUID?
+    
+    // Only used if type == .button
+    var buttonConfig: PostRequestConfig?
+    
+    // Only used if type == .spacer
+    var spacerHeight: CGFloat = 5.0
+    
+    // Convenience computed property
+    var isSpacer: Bool {
+        type == .spacer
+    }
+    
+    init(id: UUID = UUID(), type: ButtonItemType, pageId: UUID?, buttonConfig: PostRequestConfig? = nil, spacerHeight: CGFloat = 5.0) {
+        self.id = id
+        self.type = type
+        self.pageId = pageId
+        self.buttonConfig = buttonConfig
+        self.spacerHeight = spacerHeight
+    }
+    
+    // Create a button item
+    static func button(_ config: PostRequestConfig) -> ButtonItem {
+        ButtonItem(id: config.id, type: .button, pageId: config.pageId, buttonConfig: config)
+    }
+    
+    // Create a spacer item
+    static func spacer(pageId: UUID, height: CGFloat = 5.0) -> ButtonItem {
+        ButtonItem(id: UUID(), type: .spacer, pageId: pageId, buttonConfig: nil, spacerHeight: height)
+    }
+}
 
 struct PostRequestConfig: Identifiable, Codable {
     var id = UUID()
@@ -125,8 +169,10 @@ let buttonColorSwatches: [(name: String, hex: String)] = [
 
 class RequestStore: ObservableObject {
     @Published var requests: [PostRequestConfig] = []
+    @Published var buttonItems: [ButtonItem] = []
     
     private let saveKey = "SavedRequests"
+    private let itemsKey = "SavedButtonItems"
     
     init() {
         loadRequests()
@@ -146,71 +192,135 @@ class RequestStore: ObservableObject {
             }
         }
         
+        // Migrate old requests to buttonItems if needed
+        if buttonItems.isEmpty && !requests.isEmpty {
+            buttonItems = requests.map { ButtonItem.button($0) }
+            saveButtonItems()
+        }
+        
         if requests.isEmpty {
             // Create example button on first page
             if let defaultPageId = pageStore.pages.first?.id {
-                requests = [
-                    PostRequestConfig(
-                        buttonTitle: "Example API Call",
-                        url: "https://jsonplaceholder.typicode.com/posts",
-                        headers: [
-                            PostRequestConfig.HTTPHeader(key: "Content-Type", value: "application/json"),
-                            PostRequestConfig.HTTPHeader(key: "Accept", value: "application/json")
-                        ],
-                        body: """
-                        {
-                            "title": "Test Post",
-                            "body": "This is a test",
-                            "userId": 1
-                        }
-                        """,
-                        pageId: defaultPageId
-                    )
-                ]
+                let exampleButton = PostRequestConfig(
+                    buttonTitle: "Example API Call",
+                    url: "https://jsonplaceholder.typicode.com/posts",
+                    headers: [
+                        PostRequestConfig.HTTPHeader(key: "Content-Type", value: "application/json"),
+                        PostRequestConfig.HTTPHeader(key: "Accept", value: "application/json")
+                    ],
+                    body: """
+                    {
+                        "title": "Test Post",
+                        "body": "This is a test",
+                        "userId": 1
+                    }
+                    """,
+                    pageId: defaultPageId
+                )
+                requests = [exampleButton]
+                buttonItems = [ButtonItem.button(exampleButton)]
+                saveRequests()
+                saveButtonItems()
             }
         }
     }
     
     func saveRequests() {
+        // Update requests array from buttonItems
+        requests = buttonItems.compactMap { $0.buttonConfig }
+        
         if let encoded = try? JSONEncoder().encode(requests) {
             UserDefaults.standard.set(encoded, forKey: saveKey)
         }
     }
     
+    func saveButtonItems() {
+        if let encoded = try? JSONEncoder().encode(buttonItems) {
+            UserDefaults.standard.set(encoded, forKey: itemsKey)
+        }
+        saveRequests()
+    }
+    
     func loadRequests() {
+        // Try loading buttonItems first (new format)
+        if let data = UserDefaults.standard.data(forKey: itemsKey),
+           let decoded = try? JSONDecoder().decode([ButtonItem].self, from: data) {
+            buttonItems = decoded
+            requests = buttonItems.compactMap { $0.buttonConfig }
+            return
+        }
+        
+        // Fall back to old format
         if let data = UserDefaults.standard.data(forKey: saveKey),
            let decoded = try? JSONDecoder().decode([PostRequestConfig].self, from: data) {
             requests = decoded
+            buttonItems = decoded.map { ButtonItem.button($0) }
         }
     }
     
     func addRequest() {
-        requests.append(PostRequestConfig())
-        saveRequests()
+        let newRequest = PostRequestConfig()
+        requests.append(newRequest)
+        buttonItems.append(ButtonItem.button(newRequest))
+        saveButtonItems()
     }
     
     func addRequest(_ config: PostRequestConfig) {
         requests.append(config)
-        saveRequests()
+        buttonItems.append(ButtonItem.button(config))
+        saveButtonItems()
+    }
+    
+    func addSpacer(pageId: UUID, height: CGFloat = 5.0, at index: Int? = nil) {
+        let spacer = ButtonItem.spacer(pageId: pageId, height: height)
+        if let index = index {
+            buttonItems.insert(spacer, at: index)
+        } else {
+            buttonItems.append(spacer)
+        }
+        saveButtonItems()
+    }
+    
+    func updateItem(_ item: ButtonItem) {
+        if let index = buttonItems.firstIndex(where: { $0.id == item.id }) {
+            buttonItems[index] = item
+            saveButtonItems()
+        }
     }
     
     func deleteRequest(at offsets: IndexSet) {
         for index in offsets.sorted().reversed() {
-            requests.remove(at: index)
+            if index < buttonItems.count {
+                buttonItems.remove(at: index)
+            }
         }
-        saveRequests()
+        saveButtonItems()
+    }
+    
+    func deleteItem(at offsets: IndexSet) {
+        for index in offsets.sorted().reversed() {
+            if index < buttonItems.count {
+                buttonItems.remove(at: index)
+            }
+        }
+        saveButtonItems()
     }
     
     func updateRequest(_ request: PostRequestConfig) {
-        if let index = requests.firstIndex(where: { $0.id == request.id }) {
-            requests[index] = request
-            saveRequests()
+        if let index = buttonItems.firstIndex(where: { $0.id == request.id }) {
+            buttonItems[index].buttonConfig = request
+            saveButtonItems()
         }
     }
     
     // MARK: - Reorder Buttons
     func moveRequest(from source: IndexSet, to destination: Int) {
-        requests.move(fromOffsets: source, toOffset: destination)
-        saveRequests()
+        buttonItems.move(fromOffsets: source, toOffset: destination)
+        saveButtonItems()
+    }
+    
+    func moveItem(from source: IndexSet, to destination: Int) {
+        buttonItems.move(fromOffsets: source, toOffset: destination)
+        saveButtonItems()
     }
 }
